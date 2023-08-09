@@ -13,6 +13,7 @@ import math
 import random
 import matplotlib.pyplot as plt
 from sklearn import metrics
+from math import sqrt
 
 
 from scipy.special import expit
@@ -32,12 +33,14 @@ class SimpleClassifier:
         print(conf)
 
         # Start a run, tracking hyperparameters
-        # run = wandb.init(
-        #     # set the wandb project where this run will be logged
-        #     project = self.conf["wandb_project"],
-        #     # track hyperparameters and run metadata with wandb.config
-        #     config = self.conf
-        # )
+        run = wandb.init(
+            # Set the project where this run will be logged
+            project=self.conf["wandb_project"],
+            # Track hyperparameters and run metadata
+            config=self.conf
+        )
+
+        wandb.run.name = "op_{}lr{}batch{}act{}layer{}_neuron{}".format(self.conf.optimizer ,self.conf.eta,config.batchsize,config.activation,config.no_of_layers-2,config.no_of_neurons)
 
 
         if(conf["dataset"] == "fashion_mnist"):
@@ -146,6 +149,14 @@ class SimpleClassifier:
     def calc_accuracy(self,a,b):
         return (len(a) - np.count_nonzero(a - b)) * 100 / len(a)
 
+    def squared_grad(dParams):
+        sg = 0
+        for l in range(len(dParams["w"])):
+            sg += np.multiply(dParams["w"][l],dParams["w"][l])
+            sg += np.multiply(dParams["b"][l], dParams["b"][l])
+        return sg
+
+
     def forward_propagation(self, data, outputOriginal, params, dimensions):
 
             layers = self.init_layers(dimensions)
@@ -213,7 +224,7 @@ class SimpleClassifier:
                predictions.append(p)
               
 
-               for l in range(len(dimensions)):
+               for l in range(len(dimensions) - 1):
                     dParam["w"][l] += temp["w"][l]
                     dParam["b"][l] += temp["b"][l]
             
@@ -271,20 +282,145 @@ class SimpleClassifier:
         return [params, accTrain, lossTrain]
 
             
+    def calc_params_nag(self, params, batchSize, dimensions, eta, beta):
+        
+        index = 0
+        lossTrain = []
+        predictions = []
+        uold = self.init_params_zeros()
+
+        while(index < len(self.train_images)):
+            
+            dParams = self.init_params_zeros(dimensions)
+
+            paramLookAhead = params
+            
+            for l in range(len(dimensions) - 1):
+                paramLookAhead["w"][l] -= beta * uold["w"][l]
+                paramLookAhead["b"][l] -= beta * uold["b"][l]
+            
+            
+
+            for i in range(index, index + batchSize):
+                [layers, loss, p] = self.forward_propagation(self.train_images[i], self.train_labels[i], paramLookAhead, dimensions)
+                temp = self.backward_propagation(layers, paramLookAhead, dimensions, self.train_images[i])
+                lossTrain.append(loss) 
+                predictions.append(p)
+
+                for l in range(len(dimensions)):
+                    dParams["w"][l] = dParams["w"][l] + temp["w"][l]
+                    dParams["b"][l] = dParams["b"][l] + temp["b"][l]
+                
+            unew = self.init_params_zeros(len(dimensions) - 1)
+
+            for l in range(len(dimensions) - 1):
+                unew["w"][l] = beta * uold["w"][l] + (dParams["w"][l]/batchSize)
+                unew["b"][1] = beta * uold["w"][l] + (dParams["b"][l]/batchSize)
+            
+            for l in range(len(dimensions) - 1):
+                params["w"][l] = params["w"][l] - eta * unew["w"][l]
+                params["b"][l] = params["b"][l] - eta * unew["b"][l]
+            
+        accTrain = self.calc_accuracy(self.train_labels, predictions)
+        
+        return [params, accTrain, lossTrain]
 
 
-    def calc_params(self, params, batchSize, dimensions, eta, beta):
+    def calc_params_rmsprop(self, params, batchSize, dimensions, eta, beta, rho):
+        
+        index = 0
+        lossTrain = []
+        predictions = []
+        vold = 0
+        #uold = self.init_params_zeros()
+
+        while(index < len(self.train_images)):
+            
+            dParams = self.init_params_zeros(dimensions)
+
+            for i in range(index, index + batchSize):
+                [layers, loss, p] = self.forward_propagation(self.train_images[i], self.train_labels[i], params, dimensions)
+                temp = self.backward_propagation(layers, params, dimensions, self.train_images[i])
+                lossTrain.append(loss) 
+                predictions.append(p)
+
+                for l in range(len(dimensions)):
+                    dParams["w"][l] = dParams["w"][l] + temp["w"][l]
+                    dParams["b"][l] = dParams["b"][l] + temp["b"][l]
+                
+            #unew = self.init_params_zeros(len(dimensions) - 1)
+
+            # for l in range(len(dimensions) - 1):
+            #     unew["w"][l] = beta * uold["w"][l] + (dParams["w"][l]/batchSize)
+            #     unew["b"][1] = beta * uold["w"][l] + (dParams["b"][l]/batchSize)
+            
+            vnew = beta * vold + (1 - beta) * self.squared_grad(dParams)
+
+            for l in range(len(dimensions) - 1):
+                params["w"][l] = params["w"][l] - (eta/(vnew + rho)) * dParams["w"][l]
+                params["b"][l] = params["b"][l] - (eta/(vnew + rho)) * dParams["b"][l]
+            
+            vold = vnew
+
+        accTrain = self.calc_accuracy(self.train_labels, predictions)
+        
+        return [params, accTrain, lossTrain]
+
+    def calc_params_adam(self, params, batchSize, dimensions, eta, beta1, beta2, rho):
+        index = 0
+        lossTrain = []
+        predictions = []
+        vold = 0
+        uold = self.init_params_zeros()
+
+        while(index < len(self.train_images)):
+            
+            dParams = self.init_params_zeros(dimensions)
+
+            for i in range(index, index + batchSize):
+                [layers, loss, p] = self.forward_propagation(self.train_images[i], self.train_labels[i], params, dimensions)
+                temp = self.backward_propagation(layers, params, dimensions, self.train_images[i])
+                lossTrain.append(loss) 
+                predictions.append(p)
+
+                for l in range(len(dimensions)):
+                    dParams["w"][l] = dParams["w"][l] + temp["w"][l]
+                    dParams["b"][l] = dParams["b"][l] + temp["b"][l]
+                
+            unew = self.init_params_zeros(len(dimensions) - 1)
+
+            for l in range(len(dimensions) - 1):
+                unew["w"][l] = beta1 * uold["w"][l] + (1 - beta1) * (dParams["w"][l]/batchSize)
+                unew["b"][1] = beta1 * uold["w"][l] + (1 - beta1) * (dParams["b"][l]/batchSize)
+            
+            vnew = beta2 * vold + (1 - beta2) * self.squared_grad(dParams)
+            
+            pvnew = vnew / (1 - beta2)
+
+
+            for l in range(len(dimensions) - 1):
+                params["w"][l] = params["w"][l] - (eta/sqrt(pvnew + rho)) * (unew["w"][l]/(1 - beta2))
+                params["b"][l] = params["b"][l] - (eta/sqrt(pvnew + rho)) * (unew["b"][l]/(1 - beta2))
+            
+            vold = vnew
+
+        accTrain = self.calc_accuracy(self.train_labels, predictions)
+        
+        return [params, accTrain, lossTrain]
+    def calc_params(self, params, batchSize, dimensions, eta, beta, rho):
         updateRule = self.conf["optimizer"]
         if(updateRule == "sgd"):
             [params, accTrain, lossTrain] = self.calc_params_sgd(params, batchSize, dimensions, eta)
         if(updateRule == "momentum"):
             [params, accTrain, lossTrain] = self.calc_params_momentum(params, batchSize, dimensions, eta, beta)
-        # if(updateRule == "nag"):
-        #     [params, accTrain, lossTrain] = self.calc_params_nag(params, batchSize, dimensions)
-        # if(updateRule == "rmsprop"):
-        #     [params, accTrain, lossTrain] = self.calc_params_rmsprop(params, batchSize, dimensions)
-        # if(updateRule == "nadam"):
-        #     [params, accTrain, lossTrain] = self.calc_params_nadam(params, batchSize, dimensions)
+        if(updateRule == "nag"):
+            [params, accTrain, lossTrain] = self.calc_params_nag(params, batchSize, dimensions, eta, beta)
+        if(updateRule == "rmsprop"):
+            [params, accTrain, lossTrain] = self.calc_params_rmsprop(params, batchSize, dimensions, eta, beta, rho)
+        if(updateRule == "adam"):
+            [params, accTrain, lossTrain] = self.calc_params_adam(params, batchSize, dimensions)
+        if(updateRule == "nadam"):
+            [params, accTrain, lossTrain] = self.calc_params_nadam(params, batchSize, dimensions)
         
         return [params, accTrain, lossTrain]
 
@@ -296,6 +432,7 @@ class SimpleClassifier:
         eta = float(self.conf["learning_rate"])
         levels = int(self.conf["num_layers"])
         hidden_size = int(self.conf["hidden_size"])
+        rho = 0.99
 
         dimensions = []
         for dim in range(levels):
@@ -322,9 +459,8 @@ class SimpleClassifier:
         for itr in range (epochs):
             
             
-            [params, accTrain, lossTrain] = self.calc_params(params, batchSize, dimensions, eta, beta)
+            [params, accTrain, lossTrain] = self.calc_params(params, batchSize, dimensions, eta, beta, rho)
             
-            #wandb.log({"lossTrain": lossTrain})
             TrainLosses.append(lossTrain)
             TrainAccuracy.append(accTrain)
             
@@ -347,12 +483,16 @@ class SimpleClassifier:
 
             cm_display.plot()
             plt.show()
-            #wandb.log({"loss": lossTest})
+
             TestLosses.append(lossTest)
             print("training loss: " , lossTrain)
             print("test loss: ", lossTest)
             print("test accuracy: ", accTest)
             print("train accuracy: ", TrainAccuracy)
+            
+            wandb.log({"loss": lossTest})
+            wandb.log({"lossTrain": lossTrain})
+            wandb.log({"accuracy": accTest})
 
 
 
@@ -369,7 +509,7 @@ argstore = {
     "dataset" : "fashion_mnist",
     "activation" : "sigmoid",
     "loss" : "cross_entropy",
-    "optimizer": "sgd",
+    "optimizer": "momentum",
     "epochs": "100",
     "learning_rate": "0.01",
     "num_layers": "3",
